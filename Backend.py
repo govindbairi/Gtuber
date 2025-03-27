@@ -1,11 +1,11 @@
-from fastapi import FastAPI, Form, File, UploadFile
+from fastapi import FastAPI, Form
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 import os
 import yt_dlp
 
 app = FastAPI()
 
-# Adding CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -14,20 +14,41 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-cur_dir = os.getcwd()
+# Directory to store downloads
+DOWNLOADS_DIR = os.path.join(os.getcwd(), "downloads")
+os.makedirs(DOWNLOADS_DIR, exist_ok=True)
 
 @app.post("/download")
-def download_video(link: str = Form(...)):
-    youtube_dl_options = {
-        "format": "best",
-        "outtmpl": os.path.join(cur_dir, f"video-{link[-11:]}.mp4")  # Fixed the output template and slicing
-    }
-    
-    with yt_dlp.YoutubeDL(youtube_dl_options) as ydl:  # Fixed the yt_dlp class name
-        ydl.download([link])
-    
-    return {"status": "Download started"}
+async def download_video(link: str = Form(...)):
+    try:
+        youtube_dl_options = {
+            "format": "bv+ba/best",
+            "merge_output_format": "mp4",
+            "outtmpl": os.path.join(DOWNLOADS_DIR, "%(title)s.%(ext)s"),
+            "postprocessors": [
+                {"key": "FFmpegVideoConvertor", "preferedformat": "mp4"},
+                {"key": "FFmpegEmbedSubtitle"},
+            ],
+        }
 
-@app.post("/upload")
-async def upload_file(file: UploadFile = File(...)):
-    return {"filename": file.filename}
+        with yt_dlp.YoutubeDL(youtube_dl_options) as ydl:
+            info_dict = ydl.extract_info(link, download=True)
+            filename = ydl.prepare_filename(info_dict).replace(".webm", ".mp4").replace(".mkv", ".mp4")
+            filepath = os.path.join(DOWNLOADS_DIR, filename)
+
+        return {"status": "Download complete", "filename": filename, "filepath": f"/files/{filename}"}
+
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+# Serve downloaded files
+@app.get("/files/{filename}")
+async def get_file(filename: str):
+    file_path = os.path.join(DOWNLOADS_DIR, filename)
+    if os.path.exists(file_path):
+        return FileResponse(file_path, filename=filename, media_type="video/mp4")
+    return {"status": "error", "message": "File not found"}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
